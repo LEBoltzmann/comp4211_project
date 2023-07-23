@@ -1,0 +1,7 @@
+gdown==4.7.1
+imageio==2.31.1
+timm==0.4.9
+tqdm==4.65.0
+wilds==2.0.0
+torch
+torchvision

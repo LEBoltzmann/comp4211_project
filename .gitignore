@@ -1,0 +1,9 @@
+data
+
+**/__pycache__
+
+domainbed/misc/*
+
+test_log/*
+train_output/*
+start.txt
