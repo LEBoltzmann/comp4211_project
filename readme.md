@@ -7,4 +7,4 @@ Please follow `README_old.md` to start training and evaluate with TTA. <br/>
 2. Tent
 3. AdaNPC
 
-### It is recommended to open a branch if you are going to delete or make big changes 
+### It is recommended to open a branch if you are going to delete many things or make big changes 
