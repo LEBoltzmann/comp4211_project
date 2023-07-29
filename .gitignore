@@ -1,5 +1,5 @@
-data
 
+**/.idea
 **/__pycache__
 
 domainbed/misc/*
@@ -7,3 +7,5 @@ domainbed/misc/*
 test_log/*
 train_output/*
 start.txt
+
+data

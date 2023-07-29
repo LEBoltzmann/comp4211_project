@@ -337,9 +337,10 @@ if __name__ == "__main__":
         loaders = zip(eval_loader_names, eval_loaders, eval_weights)
     
     evals = []
+    train_loader = []
     for name, loader, weights in loaders:
         if name in ['env{}_in'.format(i) for i in args.test_envs]:
-            train_loader = (name, loader, weights)
+            train_loader.append((name, loader, weights))
         else:
             evals.append((name, loader, weights))
 
@@ -384,7 +385,7 @@ if __name__ == "__main__":
     product = [x for x in itertools.product(*adapt_hparams_dict.values())]
     adapt_hparams_list = [dict(zip(adapt_hparams_dict.keys(), r)) for r in product]
 
-    results_on_test, ent_on_test = [], []
+    accs_on_test, ents_on_test = [], []
     for adapt_hparams in adapt_hparams_list:
         adapt_hparams['cached_loader'] = use_featurer_cache
 
@@ -402,20 +403,24 @@ if __name__ == "__main__":
         for key, val in checkpoint_vals.items():
             results[key] = np.mean(val)
 
-        # ## Usual evaluation
+        # Usual evaluation on all splits, except env{test}_in which is the "test domain test split"
+        # note that env{test}_out is the "test domain val split" (for Oracle model selection in train.py)
         for name, loader, weights in evals:
             acc, ent = accuracy_ent(adapted_algorithm, loader, weights, device, adapt=True)
             results[name+'_acc'] = acc
             results[name+'_ent'] = ent
+            # FIXME modify this later to print correct best acc on test env(s)
             if 'out' in name and str(args.test_envs[0]) in name:
-                results_on_test.append(acc)
-                ent_on_test.append(acc)
+                accs_on_test.append(acc)
+                ents_on_test.append(ent)
             adapted_algorithm.reset()
 
-        name, loader, weights = train_loader
-        acc, ent = accuracy_ent(adapted_algorithm, loader, weights, device, adapt=True)
-        results[name+'_acc'] = acc
-        results[name+'_ent'] = ent
+        # env{test}_in splits
+        # but why separate from evals ?? (t3a original code)
+        for name, loader, weights in train_loader:        
+            acc, ent = accuracy_ent(adapted_algorithm, loader, weights, device, adapt=True)
+            results[name+'_acc'] = acc
+            results[name+'_ent'] = ent
 
         del adapt_hparams['cached_loader']
         results_keys = sorted(results.keys())
@@ -435,10 +440,10 @@ if __name__ == "__main__":
         with open(epochs_path, 'a') as f:
             f.write(json.dumps(results, sort_keys=True) + "\n")
 
-    results_on_test, ent_on_test = np.array(results_on_test), np.array(ent_on_test)
-    idx = np.argmax(results_on_test)
-    print("best acc on test {:.1f}".format(results_on_test[idx]*100))
-    print("best acc with ent {:.1f}".format(ent_on_test[idx]))
+    accs_on_test, ents_on_test = np.array(accs_on_test), np.array(ents_on_test)
+    idx = np.argmax(accs_on_test)
+    print("best acc on test {:.1f}".format(accs_on_test[idx]*100))
+    print("best acc with ent {:.1f}".format(ents_on_test[idx]))
     # create done file
     with open(os.path.join(args.output_dir, 'done_{}'.format(alg_name)), 'w') as f:
         f.write('done')

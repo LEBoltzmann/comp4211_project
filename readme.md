@@ -1,6 +1,10 @@
 ## Quick start
 Please follow `README_old.md` to start training and evaluate with TTA. <br/>
-`requirements.txt` for required packages.
+
+Suggested dev environment
+- python=3.7.4
+- `requirements.txt` 
+- pip install torch-scatter -f https://data.pyg.org/whl/torch-1.13.0+cu117.html
 
 ## This codebase currently have: 
 1. T3A

@@ -162,11 +162,11 @@ if __name__ == "__main__":
         if i in args.test_envs]
     
     train_loaders_eval = [FastDataLoader(
-            dataset=env,
-            batch_size=64,
-            num_workers=dataset.N_WORKERS)
-            for i, (env, env_weights) in enumerate(in_splits)
-            if i not in args.test_envs]
+        dataset=env,
+        batch_size=64,
+        num_workers=dataset.N_WORKERS)
+        for i, (env, env_weights) in enumerate(in_splits)
+        if i not in args.test_envs]
 
     eval_loaders = [FastDataLoader(
         dataset=env,
@@ -268,7 +268,8 @@ if __name__ == "__main__":
                 
                 results[name+'_acc'] = acc
                 
-                # AdaNPC
+                # best "test domain acc" - 
+                # "env{test}_in" is for evaluation on test domain
                 if 'in' in name and str(args.test_envs[0]) in name and acc > best_test_acc:
                     best_test_acc = acc 
                     save_checkpoint("OOD_best.pkl")
