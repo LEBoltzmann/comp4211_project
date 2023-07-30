@@ -427,7 +427,7 @@ if __name__ == "__main__":
             acc, ent = accuracy_ent(adapted_algorithm, loader, weights, device, adapt=True)
             results[name+'_acc'] = acc
             results[name+'_ent'] = ent
-            # FIXME modify this later to print correct best acc on test env(s)
+            # envs{test}_out for model selection, just for some logging here, not big deal
             if 'out' in name and str(args.test_envs[0]) in name:
                 accs_on_test.append(acc)
                 ents_on_test.append(ent)
@@ -439,6 +439,7 @@ if __name__ == "__main__":
             acc, ent = accuracy_ent(adapted_algorithm, loader, weights, device, adapt=True)
             results[name+'_acc'] = acc
             results[name+'_ent'] = ent
+            adapted_algorithm.reset()
 
         del adapt_hparams['cached_loader']
         results_keys = sorted(results.keys())
