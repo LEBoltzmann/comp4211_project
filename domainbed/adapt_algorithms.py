@@ -7,13 +7,12 @@ import torch.autograd as autograd
 
 import copy
 import numpy as np
+from typing import List
 
 from domainbed.algorithms import Algorithm
 
 
 ALGORITHMS = [
-    'DRM',
-    'DRMFull',
     'T3A', 
     'TentFull', 
     'TentNorm',  
@@ -24,7 +23,9 @@ ALGORITHMS = [
     'SHOT', 
     'SHOTIM',
     'AdaNPC',
-    'AdaNPCBN'
+    'AdaNPCBN',
+    'TAST',
+    'TAST_BN'
 ]
 
 
@@ -110,6 +111,7 @@ class T3A(Algorithm):
         self.labels = self.warmup_labels.data
         self.ent = self.warmup_ent.data
 
+# used by TAST
 class BatchEnsemble(nn.Module):
     def __init__(self, indim, outdim, ensemble_size, init_mode):
         super().__init__()
@@ -220,6 +222,7 @@ def initialize_tensor(
             f"Unknown initializer: {initializer}"
         )
 
+# implementation from : https://openreview.net/forum?id=EzLtB4M1SbM
 class TAST(Algorithm):
     def __init__(self, input_shape, num_classes, num_domains, hparams, algorithm):
         super().__init__(input_shape, num_classes, num_domains, hparams)
@@ -317,10 +320,10 @@ class TAST(Algorithm):
         y_hat = self.labels.argmax(dim=1).long()
         filter_K = self.filter_K
         if filter_K == -1:
-            indices = torch.LongTensor(list(range(len(ent_s))))
+            indices = torch.tensor(list(range(len(ent_s))), device=ent_s.device).long()
         else:
             indices = []
-            indices1 = torch.LongTensor(list(range(len(ent_s))))
+            indices1 = torch.tensor(list(range(len(ent_s))), device=ent_s.device).long()
             for i in range(self.num_classes):
                 _, indices2 = torch.sort(ent_s[y_hat == i])
                 indices.append(indices1[y_hat == i][indices2][:filter_K])

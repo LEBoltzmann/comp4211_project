@@ -10,5 +10,6 @@ Suggested dev environment
 1. T3A
 2. Tent
 3. AdaNPC
+4. TAST
 
 ### It is recommended to open a branch if you are going to delete many things or make big changes 

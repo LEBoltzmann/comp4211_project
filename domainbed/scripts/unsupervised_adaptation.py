@@ -380,6 +380,24 @@ if __name__ == "__main__":
             'beta': [0.9], 
             'theta': [0.1], 
         }
+    elif args.adapt_algorithm in ['TAST_BN']:
+        adapt_hparams_dict = {
+            'filter_K': [1, 5, 20],
+            'gamma': [1, 3],
+            'lr': [1e-3],
+            'tau': [10],
+            'k': [1, 2, 4, 8],
+        }
+    elif args.adapt_algorithm in ['TAST']:
+        adapt_hparams_dict = {
+            'num_ensemble': [1, 5, 10, 20],
+            'filter_K': [1, 5, 20, 50, 100, -1],
+            'gamma': [1, 3],
+            'lr': [1e-3],
+            'tau': [10],
+            'k': [1, 2, 4, 8],
+            'init_mode': ['kaiming_normal']
+        }
     else:
         raise Exception("Not Implemented Error")
     product = [x for x in itertools.product(*adapt_hparams_dict.values())]
@@ -442,8 +460,8 @@ if __name__ == "__main__":
 
     accs_on_test, ents_on_test = np.array(accs_on_test), np.array(ents_on_test)
     idx = np.argmax(accs_on_test)
-    print("best acc on test {:.1f}".format(accs_on_test[idx]*100))
-    print("best acc with ent {:.1f}".format(ents_on_test[idx]))
+    print("best acc on test {:.2f}".format(accs_on_test[idx]*100))
+    print("best acc with ent {:.2f}".format(ents_on_test[idx]))
     # create done file
     with open(os.path.join(args.output_dir, 'done_{}'.format(alg_name)), 'w') as f:
         f.write('done')
