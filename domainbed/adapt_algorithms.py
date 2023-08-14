@@ -25,7 +25,9 @@ ALGORITHMS = [
     'AdaNPC',
     'AdaNPCBN',
     'TAST',
-    'TAST_BN'
+    'TAST_BN',
+    'DRM',
+    'DRMFull'
 ]
 
 
@@ -1097,3 +1099,292 @@ class AdaNPCBN(AdaNPC):
         )
         # adapted_algorithm.classifier.predict = lambda self, x: self(x)
         return bn, optimizer
+
+#DRM code
+
+class DRMFull(Algorithm):
+    def __init__(self, input_shape, num_classes, num_domains, hparams, algorithm):
+        """
+        Hparams
+        -------
+        alpha (float) : learning rate coefficient
+        beta (float) : threshold
+        gamma (int) : number of updates
+        """
+        super().__init__(input_shape, num_classes, num_domains, hparams)
+        self.model, self.optimizer = self.configure_model_optimizer(algorithm, alpha=hparams['alpha'])
+        self.beta = hparams['beta']
+        self.steps = hparams['step']
+        self.gamma = hparams['gamma']
+        self.label = hparams['label']
+        assert self.steps > 0, "tent requires >= 1 step(s) to forward and update"
+        self.episodic = False
+    
+        # note: if the model is never reset, like for continual adaptation,
+        # then skipping the state copy would save memory
+        self.model_state, self.optimizer_state = \
+            copy_model_and_optimizer(self.model, self.optimizer)
+
+    def forward(self, x, adapt=False):
+        if adapt:
+            if self.episodic:
+                self.reset()
+
+            for _ in range(self.steps):
+                if self.hparams['cached_loader']:
+                    self.model.featurizer.eval()
+                    outputs = self.forward_and_adapt(x, self.model, self.optimizer, cached_loader=self.hparams['cached_loader'])
+                    self.model.featurizer.train()
+                else:
+                    outputs = self.forward_and_adapt(x, self.model, self.optimizer, cached_loader=self.hparams['cached_loader'])
+                    
+        else:
+            if self.hparams['cached_loader']:
+                outputs = self.model.classifier(x)
+            else:
+                outputs = self.model(x)
+        return outputs
+
+    @torch.enable_grad()  # ensure grads in possible no grad context for testing
+    def forward_and_adapt(self, x, model, optimizer, cached_loader=False):
+        """Forward and adapt model on batch of data.
+        Measure entropy of the model prediction, take gradients, and update params.
+        """
+        # forward
+        if not cached_loader:
+            x = model.featurizer(x)
+        if self.label == 'own':
+            outputs = self.entropy_predict_label_individual_entropy(x, model, optimizer)
+        elif self.label == 'last':
+            outputs = self.entropy_predict_label_by_final(x, model, optimizer)
+        elif self.label == 'uniform':
+            outputs = self.entropy_predict_label_uniform(x, model, optimizer)
+        elif self.label == 'drm':
+            outputs = self.entropy_predict_label_drm(x, model, optimizer)
+        else:
+            raise NotImplementedError
+
+        return outputs
+
+    def entropy_predict(self, logits, model, optimizer):
+        entropy = torch.tensor(1e10)
+        result = None
+        ents, y_hats = [], []
+        loss = torch.zeros(1)
+        for i in range(model.num_domains + 1):
+            y_hat = model.classifier_list[i](logits)
+            confidences, predict = y_hat.softmax(1).max(1)
+            predict = predict[confidences >= self.beta]
+            if predict.shape[0] > 0:
+                if loss == 0:
+                    loss = F.cross_entropy(y_hat[confidences >= self.beta], predict)
+                else:
+                    loss += F.cross_entropy(y_hat[confidences >= self.beta], predict)
+            ent = model.softmax_entropy(y_hat).mean()
+            ents.append(ent.item())
+
+            y_hats.append(torch.nn.functional.normalize(y_hat, dim=0))
+            if  ent < entropy:
+                entropy = ent
+                result = y_hat
+
+        if loss > 0:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        if self.gamma >=0 :
+            com_result = torch.zeros(y_hat.shape[0], y_hat.shape[1]).cuda()
+            weight = 1.0 / ( np.array(ents) ** self.gamma)
+            weight /= np.sum(weight)
+            
+            for i in range(model.num_domains):
+                com_result += weight[i] * y_hats[i]
+            return com_result
+
+        return result
+
+    def entropy_predict_label_drm(self, logits, model, optimizer):
+        result = None
+        entropy, y_hats, y_hats_pre = torch.zeros((model.num_domains + 1, logits.shape[0])).cuda(), torch.zeros(model.num_domains + 1, logits.shape[0], model.num_class).cuda(), []
+        loss = torch.zeros(1)
+        for i in range(model.num_domains + 1):
+            y_hat = model.classifier_list[i](logits)
+            
+            y_hats[i] = torch.nn.functional.softmax(y_hat, dim=1)
+            y_hats_pre.append(y_hat)
+            entropy[i] = model.softmax_entropy(y_hat)
+
+        com_result = torch.zeros(y_hat.shape[0], y_hat.shape[1]).cuda()
+        if self.gamma >=0 :
+            weight = 1.0 / ( entropy ** self.gamma)
+            weight = torch.nn.functional.normalize(weight, p=1, dim=0)
+            for i in range(model.num_domains):
+                com_result += torch.mul( y_hats[i].T, weight[i]).T
+        else:
+            for i in range(y_hats.shape[1]):
+                idx = entropy[:,i].argmin()
+                com_result[i] = y_hats[idx, i]
+
+        confidences, predict = com_result.softmax(1).max(1)
+        predict = predict[confidences >= self.beta]
+        for i in range(model.num_domains + 1):
+            if predict.shape[0] > 0:
+                if loss == 0:
+                    loss = F.cross_entropy(y_hats_pre[i][confidences >= self.beta], predict)
+                else:
+                    loss += F.cross_entropy(y_hats_pre[i][confidences >= self.beta], predict)
+        if loss > 0:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+    
+        return com_result
+
+    def entropy_predict_label_uniform(self, logits, model, optimizer):
+        result = None
+        entropy, y_hats, y_hats_pre = torch.zeros((model.num_domains + 1, logits.shape[0])).cuda(), torch.zeros(model.num_domains + 1, logits.shape[0], model.num_class).cuda(), []
+        loss = torch.zeros(1)
+        for i in range(model.num_domains + 1):
+            y_hat = model.classifier_list[i](logits)
+            
+            y_hats[i] = torch.nn.functional.softmax(y_hat, dim=1)
+            y_hats_pre.append(y_hat)
+            entropy[i] = model.softmax_entropy(y_hat)
+    
+        y = y_hats.mean(dim=0)
+        for i in range(model.num_domains + 1):
+            confidences, predict = y.softmax(1).max(1)
+            predict = predict[confidences >= self.beta]
+            if predict.shape[0] > 0:
+                if loss == 0:
+                    loss = F.cross_entropy(y_hats_pre[i][confidences >= self.beta], predict)
+                else:
+                    loss += F.cross_entropy(y_hats_pre[i][confidences >= self.beta], predict)
+        if loss > 0:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        com_result = torch.zeros(y_hat.shape[0], y_hat.shape[1]).cuda()
+        if self.gamma >=0 :
+            weight = 1.0 / ( entropy ** self.gamma)
+            weight = torch.nn.functional.normalize(weight, p=1, dim=0)
+            for i in range(model.num_domains):
+                com_result += torch.mul( y_hats[i].T, weight[i]).T
+        else:
+            for i in range(y_hats.shape[1]):
+                idx = entropy[:,i].argmin()
+                com_result[i] = y_hats[idx, i]
+        
+        return com_result
+
+    def entropy_predict_label_by_final(self, logits, model, optimizer):
+        result = None
+        entropy, y_hats = torch.zeros((model.num_domains + 1, logits.shape[0])).cuda(), torch.zeros(model.num_domains + 1, logits.shape[0], model.num_class).cuda()
+        loss = torch.zeros(1)
+        for i in range(model.num_domains + 1):
+            y_hat = model.classifier_list[i](logits)
+            y = model.classifier_list[-1](logits)
+            confidences, predict = y.softmax(1).max(1)
+            predict = predict[confidences >= self.beta]
+            if predict.shape[0] > 0:
+                if loss == 0:
+                    loss = F.cross_entropy(y_hat[confidences >= self.beta], predict)
+                else:
+                    loss += F.cross_entropy(y_hat[confidences >= self.beta], predict)
+            y_hats[i] = torch.nn.functional.softmax(y_hat, dim=1)
+            entropy[i] = model.softmax_entropy(y_hat)
+
+        if loss > 0:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        com_result = torch.zeros(y_hat.shape[0], y_hat.shape[1]).cuda()
+        if self.gamma >=0 :
+            weight = 1.0 / ( entropy ** self.gamma)
+            weight = torch.nn.functional.normalize(weight, p=1, dim=0)
+            for i in range(model.num_domains):
+                com_result += torch.mul( y_hats[i].T, weight[i]).T
+        else:
+            for i in range(y_hats.shape[1]):
+                idx = entropy[:,i].argmin()
+                com_result[i] = y_hats[idx, i]
+        
+        return com_result
+
+    def entropy_predict_label_individual_entropy(self, logits, model, optimizer):
+        result = None
+        entropy, y_hats = torch.zeros((model.num_domains + 1, logits.shape[0])).cuda(), torch.zeros(model.num_domains + 1, logits.shape[0], model.num_class).cuda()
+        loss = torch.zeros(1)
+        for i in range(model.num_domains + 1):
+            y_hat = model.classifier_list[i](logits)
+            confidences, predict = y_hat.softmax(1).max(1)
+            predict = predict[confidences >= self.beta]
+            if predict.shape[0] > 0:
+                if loss == 0:
+                    loss = F.cross_entropy(y_hat[confidences >= self.beta], predict)
+                else:
+                    loss += F.cross_entropy(y_hat[confidences >= self.beta], predict)
+            y_hats[i] = torch.nn.functional.softmax(y_hat, dim=1)
+            entropy[i] = model.softmax_entropy(y_hat)
+
+        if loss > 0:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        com_result = torch.zeros(y_hat.shape[0], y_hat.shape[1]).cuda()
+        if self.gamma >=0 :
+            weight = 1.0 / ( entropy ** self.gamma)
+            weight = torch.nn.functional.normalize(weight, p=1, dim=0)
+            for i in range(model.num_domains):
+                com_result += torch.mul( y_hats[i].T, weight[i]).T
+        else:
+            for i in range(y_hats.shape[1]):
+                idx = entropy[:,i].argmin()
+                com_result[i] = y_hats[idx, i]
+        
+        return com_result
+
+    def configure_model_optimizer(self, algorithm, alpha):
+        adapted_algorithm = copy.deepcopy(algorithm)
+        optimizer = torch.optim.Adam(
+            adapted_algorithm.parameters(), 
+            lr=algorithm.hparams["lr"]  * alpha,
+            weight_decay=algorithm.hparams['weight_decay']
+        )
+        return adapted_algorithm, optimizer
+
+    def predict(self, x, adapt=False):
+        return self(x, adapt)
+
+    def reset(self):
+        if self.model_state is None or self.optimizer_state is None:
+            raise Exception("cannot reset without saved model/optimizer state")
+        load_model_and_optimizer(self.model, self.optimizer,
+                                 self.model_state, self.optimizer_state)
+
+class DRM(DRMFull):
+    def configure_model_optimizer(self, algorithm, alpha):
+        adapted_algorithm = copy.deepcopy(algorithm)
+        optimizer = torch.optim.Adam(
+            adapted_algorithm.classifier_list.parameters(), 
+            lr=algorithm.hparams["lr"]  * alpha,
+            weight_decay=algorithm.hparams['weight_decay']
+        )
+        return adapted_algorithm, optimizer
+
+    def forward(self, x, adapt=False):
+        if adapt:
+            if self.episodic:
+                self.reset()
+            for _ in range(self.steps):
+                self.model.featurizer.eval()
+                outputs = self.forward_and_adapt(x, self.model, self.optimizer, cached_loader=self.hparams['cached_loader'])
+                self.model.featurizer.train()
+                    
+        else:
+            outputs = self.model.classifier(x)
+        return outputs
